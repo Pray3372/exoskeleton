@@ -1,0 +1,22 @@
+﻿# Build output
+Debug/
+Release/
+build/
+*.o
+*.d
+*.su
+*.cyclo
+*.elf
+*.map
+*.list
+*.bin
+*.hex
+
+# IDE / personal settings
+.vscode/
+.settings/language.settings.xml
+AK60-6 Debug.launch
+
+# OS
+Thumbs.db
+desktop.ini
