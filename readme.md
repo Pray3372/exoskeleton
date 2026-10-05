@@ -1,324 +1,107 @@
-AK60-6 MIT-control
+# AK60-6 MIT Control (STM32F407)
 
-/* USER CODE BEGIN Header */
-/**
-  ******************************************************************************
-  * @file           : main.c
-  * @brief          : Main program body
-  ******************************************************************************
-  * @attention
-  *
-  * Copyright (c) 2026 STMicroelectronics.
-  * All rights reserved.
-  *
-  * This software is licensed under terms that can be found in the LICENSE file
-  * in the root directory of this software component.
-  * If no LICENSE file comes with this software, it is provided AS-IS.
-  *
-  ******************************************************************************
-  */
-/* USER CODE END Header */
-/* Includes ------------------------------------------------------------------*/
-#include "main.h"
-#include "can.h"
-#include "i2c.h"
-#include "i2s.h"
-#include "spi.h"
-#include "usart.h"
-#include "usb_host.h"
-#include "gpio.h"
+使用 STM32F407 透過 CAN 匯流排，以 MIT（力控）模式控制 CubeMars AK60-6 V3.0 馬達，作為外骨骼關節驅動的開發與測試專案。
 
-/* Private includes ----------------------------------------------------------*/
+Control a CubeMars AK60-6 V3.0 actuator in MIT (force-control) mode over CAN with an STM32F407, for exoskeleton joint development and testing.
 
-/* Private typedef -----------------------------------------------------------*/
-/* USER CODE BEGIN PTD */
+> 私人備份用專案 / Personal backup repository.
 
-/* USER CODE END PTD */
+---
 
-/* Private define ------------------------------------------------------------*/
-/* USER CODE BEGIN PD */
+## 硬體 / Hardware
 
-/* USER CODE END PD */
+| 項目 Item | 說明 Description |
+|---|---|
+| MCU | STM32F407VGTx（STM32F4 Discovery） |
+| 馬達 Motor | CubeMars AK60-6 V3.0，Driver ID = 1 |
+| CAN | CAN1，**1 Mbps**，擴展 ID（Extended ID）<br>PD0 = CAN1_RX，PD1 = CAN1_TX，需外接 CAN 收發器 / external CAN transceiver required |
+| UART | USART2，115200 bps，PA2 = TX，PA3 = RX（鍵盤指令 / keyboard commands） |
+| 按鈕 Button | PA0 藍色按鈕 / Blue user button |
+| LED | PD12–PD15（狀態指示 / status indication） |
 
-/* Private macro -------------------------------------------------------------*/
-/* USER CODE BEGIN PM */
+## 操作 / Usage
 
-/* USER CODE END PM */
+| 輸入 Input | 動作 Action |
+|---|---|
+| UART 按 `S` | 送出 CAN 失能命令，主迴圈停止送控制命令 / Disable motor and stop sending commands |
+| UART 按 `E` | 解除失能旗標，恢復控制 / Clear disable flag and resume control |
+| 藍色按鈕 PA0 | 緊急停機（依目前 `main.c` 版本）/ Emergency stop (depends on current `main.c`) |
 
-/* Private variables ---------------------------------------------------------*/
+## 專案結構 / Project Structure
 
-/* USER CODE BEGIN Includes */
-#include <math.h>
-/* USER CODE END Includes */
+```
+AK60-6/
+├── AK60-6.ioc              # CubeMX 設定檔 / CubeMX configuration
+├── Core/
+│   ├── Inc/  Src/          # 主程式與使用者程式碼 / Application code
+│   │   ├── main.c          # 主迴圈 / Main loop
+│   │   ├── AK.c / AK.h     # AK60-6 MIT 封包與 CAN 收發 / MIT packing & CAN I/O
+│   │   └── disable_key.c/h # UART 鍵盤失能功能 / UART disable key
+│   └── Startup/            # 啟動組語 / Startup assembly
+├── advance_outputs/        # 進階功能模組（尚未整合進主程式）/ Optional modules
+│   ├── force_trigger.c/h   # 被推觸發 → 轉 90° → 放鬆 / Push-triggered 90° move
+│   └── disable_key.c/h
+├── mit_control.c/h         # MIT 控制草稿 / MIT control draft
+├── Drivers/  Middlewares/  USB_HOST/   # ST HAL、CMSIS、USB Host（CubeMX 產生）
+└── STM32F407VGTX_FLASH.ld / _RAM.ld    # Linker scripts
+```
 
-/* USER CODE BEGIN PV */
-volatile float motor_actual_p = 0.0f; // 存放馬達 CAN 回傳的當前實際角度
-volatile float start_p = 0.0f;
-volatile uint8_t is_first_run = 1; // 用來標記是否為開機第一次執行
-// 1. AK60-6 V3.0 規格與 CAN ID
-#define DRIVER_ID     1
-#define CAN_EXT_ID    ((8 << 8) | DRIVER_ID)
-#define P_MIN  -12.56f
-#define P_MAX   12.56f
+## MIT 控制參數範圍 / MIT Parameter Ranges
 
-#define V_MIN  -60.0f
-#define V_MAX   60.0f
+依 AK60-6 V3.0 手冊 / Per the AK60-6 V3.0 manual:
 
-#define KP_MIN   0.0f
-#define KP_MAX 500.0f
+| 參數 Param | 最小 Min | 最大 Max | 單位 Unit | 位元 Bits |
+|---|---|---|---|---|
+| 位置 Position `p` | -12.56 | 12.56 | rad | 16 |
+| 速度 Velocity `v` | -60 | 60 | rad/s | 12 |
+| 剛性 `Kp` | 0 | 500 | – | 12 |
+| 阻尼 `Kd` | 0 | 5 | – | 12 |
+| 力矩 Torque `t_ff` | -12 | 12 | N·m | 12 |
 
-#define KD_MIN   0.0f
-#define KD_MAX   5.0f
+MIT 模式 CAN ID：`(8 << 8) | DRIVER_ID`
 
-#define T_MIN  -12.0f
-#define T_MAX   12.0f
+```c
+// pack_cmd(id, p_des, v_des, kp, kd, t_ff)
+pack_cmd(1, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f);   // 零力矩、僅阻尼 / zero torque, damping only
+```
 
-// 註：hcan1 已經由 CubeMX 於 main.h / main.c 中宣告，不需重複定義
-/* USER CODE END PV */
+## 建置與燒錄 / Build & Flash
 
-/* Private function prototypes -----------------------------------------------*/
-void SystemClock_Config(void);
-void MX_USB_HOST_Process(void);
+1. 以 **STM32CubeIDE** 開啟（File → Open Projects from File System）/ Open with STM32CubeIDE.
+2. Build（`Ctrl + B`），輸出於 `Debug/` / Output goes to `Debug/`.
+3. 透過 ST-LINK 燒錄並執行 / Flash and run via ST-LINK.
 
-/* USER CODE BEGIN PFP */
+> 若用 CubeMX 重新產生程式碼，自訂程式請寫在 `/* USER CODE BEGIN */ ... /* USER CODE END */` 之間，否則會被覆蓋。
+> When regenerating code with CubeMX, keep custom code inside `USER CODE BEGIN/END` blocks.
 
-/* USER CODE END PFP */
+## 使用 advance_outputs 模組 / Using `advance_outputs`
 
-/* Private user code ---------------------------------------------------------*/
-/* USER CODE BEGIN 0 */
-// 發送設置臨時原點指令 (set_origin_mode: 0 = 臨時原點/斷電消除, 1 = 永久零點)
-HAL_StatusTypeDef set_motor_temporary_origin(uint8_t set_origin_mode) {
-    CAN_TxHeaderTypeDef txHeader;
-    uint8_t txData[1];
-    uint32_t txMailbox;
+`force_trigger` 為獨立模組，整合方式（詳見 `force_trigger.h` 檔頭）：
 
-    txData[0] = set_origin_mode; // 0 代表臨時原點 (斷電消除)
+```c
+#include "force_trigger.h"
 
-    // 依據 CubeMars 協定：(CAN_PACKET_SET_ORIGIN_HERE << 8) | DRIVER_ID
-    // CAN_PACKET_SET_ORIGIN_HERE 即為截圖中的 64 (0x40)
-    txHeader.ExtId = (64 << 8) | DRIVER_ID;
-    txHeader.IDE   = CAN_ID_EXT;
-    txHeader.RTR   = CAN_RTR_DATA;
-    txHeader.DLC   = 1; // 資料長度 1 Byte
+ForceTrig_Init(1);              // DisableKey_Init() 之後 / after DisableKey_Init()
 
-    return HAL_CAN_AddTxMessage(&hcan1, &txHeader, txData, &txMailbox);
-}
-
-// 數值範圍轉換輔助函式
-float uint_to_float(int uint_val, float min_val, float max_val, int bits) {
-    float span = max_val - min_val;
-    float offset = min_val;
-    return ((float)uint_val) * span / ((float)((1 << bits) - 1)) + offset;
-}
-
-// CAN 回傳資料解包函式
-// 修正後的 unpack_motor_feedback 函式（請確認第 100 ~ 124 行如下所示）
-void unpack_motor_feedback(uint8_t* rxData) {
-    uint16_t p_int = (rxData[1] << 8) | rxData[2];
-    float raw_p = uint_to_float(p_int, P_MIN, P_MAX, 16);
-
-    static uint8_t initialized = 0;
-    if (!initialized) {
-        motor_actual_p = raw_p;
-        initialized = 1;
-        return;
-    }
-
-    float delta = raw_p - motor_actual_p;
-
-    if (delta > 3.14159f) {
-        delta -= 6.28318f;
-    } else if (delta < -3.14159f) {
-        delta += 6.28318f;
-    }
-
-    motor_actual_p += delta;
-}
-
-// 讀取 CAN 接收暫存區 (FIFO0) 函式
-void update_motor_position(void) {
-    CAN_RxHeaderTypeDef rxHeader;
-    uint8_t rxData[8];
-
-    if (HAL_CAN_GetRxFifoFillLevel(&hcan1, CAN_RX_FIFO0) > 0) {
-        if (HAL_CAN_GetRxMessage(&hcan1, CAN_RX_FIFO0, &rxHeader, rxData) == HAL_OK) {
-            unpack_motor_feedback(rxData);
-        }
+while (1) {
+    if (!DisableKey_IsDisabled()) {
+        ForceTrig_Step();       // 取代原本的 pack_cmd() / replaces pack_cmd()
     }
 }
+```
 
-// 發送 AK60-6 馬達關閉/Disable 指令 (8 個 0xFD)
-HAL_StatusTypeDef disable_motor(void) {
-    CAN_TxHeaderTypeDef txHeader;
-    uint8_t txData[8] = {0xFD, 0xFD, 0xFD, 0xFD, 0xFD, 0xFD, 0xFD, 0xFD};
-    uint32_t txMailbox;
+注意：使用時要移除主迴圈原本的 `pack_cmd()`，且 `force_trigger.c` 自行定義了 `CAN1_RX0_IRQHandler`，若 CubeMX 也產生同名 handler 需擇一保留。
 
-    txHeader.StdId = 0x00;
-    txHeader.ExtId = CAN_EXT_ID;
-    txHeader.IDE   = CAN_ID_EXT;
-    txHeader.RTR   = CAN_RTR_DATA;
-    txHeader.DLC   = 8;
+Note: remove the original `pack_cmd()` call, and keep only one `CAN1_RX0_IRQHandler` definition.
 
-    return HAL_CAN_AddTxMessage(&hcan1, &txHeader, txData, &txMailbox);
-}
+## 安全注意事項 / Safety
 
-static int float_to_uint(float x, float x_min, float x_max, int bits) {
-    if (x < x_min) x = x_min;
-    if (x > x_max) x = x_max;
-    return (int)((x - x_min) * ((1 << bits) - 1) / (x_max - x_min));
-}
+- 首次測試請先用低 `Kp`、低力矩，並固定好馬達 / Start with low `Kp` and torque, and secure the motor.
+- 隨時保留失能手段（UART `S` 或 PA0 按鈕）/ Always keep a way to disable the motor.
+- 馬達位置於斷電後歸零（臨時原點）/ Position resets to zero after power-off (temporary origin).
 
-// 單行發送封裝函式：send_mit(p, v, kp, kd, t)
-HAL_StatusTypeDef send_mit(float p, float v, float kp, float kd, float t) {
-    uint16_t p_i  = float_to_uint(p,  P_MIN,  P_MAX,  16);
-    uint16_t v_i  = float_to_uint(v,  V_MIN,  V_MAX,  12);
-    uint16_t kp_i = float_to_uint(kp, KP_MIN, KP_MAX, 12);
-    uint16_t kd_i = float_to_uint(kd, KD_MIN, KD_MAX, 12);
-    uint16_t t_i  = float_to_uint(t,  T_MIN,  T_MAX,  12);
+## 授權 / License
 
-    uint8_t d[8] = {
-        (uint8_t)(kp_i >> 4),
-        (uint8_t)(((kp_i & 0x0F) << 4) | (kd_i >> 8)),
-        (uint8_t)(kd_i & 0xFF),
-        (uint8_t)(p_i >> 8),
-        (uint8_t)(p_i & 0xFF),
-        (uint8_t)(v_i >> 4),
-        (uint8_t)(((v_i & 0x0F) << 4) | (t_i >> 8)),
-        (uint8_t)(t_i & 0xFF)
-    };
+本專案的自寫程式碼僅供個人使用。`Drivers/` 與 `Middlewares/` 內的 STMicroelectronics / ARM 元件依其各自資料夾中的 `LICENSE.txt` 授權。
 
-    CAN_TxHeaderTypeDef header = {
-        .ExtId = CAN_EXT_ID,
-        .IDE   = CAN_ID_EXT,
-        .RTR   = CAN_RTR_DATA,
-        .DLC   = 8
-    };
-    uint32_t mailbox;
-    return HAL_CAN_AddTxMessage(&hcan1, &header, d, &mailbox);
-}
-/* USER CODE END 0 */
-
-/**
-  * @brief  The application entry point.
-  * @retval int
-  */
-int main(void)
-{
-
-  /* USER CODE BEGIN 1 */
-
-  /* USER CODE END 1 */
-
-  /* MCU Configuration--------------------------------------------------------*/
-
-  /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
-  HAL_Init();
-
-  /* Initialize all configured peripherals */
-    MX_GPIO_Init();
-    MX_CAN1_Init(); // CubeMX 自動生成的 CAN 初始化
-
-  /* USER CODE BEGIN Init */
-
-  /* USER CODE END Init */
-
-  /* Configure the system clock */
-  SystemClock_Config();
-
-  /* USER CODE BEGIN SysInit */
-
-  /* USER CODE END SysInit */
-
-  /* Initialize all configured peripherals */
-  MX_GPIO_Init();
-  MX_CAN1_Init();
-  MX_I2C1_Init();
-  MX_I2S3_Init();
-  MX_SPI1_Init();
-  MX_USART2_UART_Init();
-  MX_USB_HOST_Init();
-
-  /* USER CODE BEGIN 2 */
-    // ⚠️【重點】必須手動啟動 CAN 週邊！
-    if (HAL_CAN_Start(&hcan1) != HAL_OK) {
-        Error_Handler();
-    }
-
-    // 馬達運動與時間參數定義
-    const float target_p = 1.5708f;               // 90 度 (rad)
-    const float target_v = 0.17488f;              // 1.67 rpm (rad/s)
-    const float total_time = target_p / target_v; // 約 8.98 秒
-    const float Kp_run = 35.0f, Kd_run = 1.8f, T_max = 10.0f;
-    uint32_t tick_start;
-    /* USER CODE END 2 */
-
-  /* Infinite loop */
-    /* USER CODE BEGIN WHILE */
-        while (1)
-        {
-            // --- 1. 開機首次執行保護：擷取開機實體角度並給予 0.5 秒阻尼 ---
-            if (is_first_run) {
-                uint32_t init_tick = HAL_GetTick();
-                while ((HAL_GetTick() - init_tick) < 500) {
-                    if (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_0) == GPIO_PIN_SET) {
-                        disable_motor();
-                        HAL_GPIO_WritePin(GPIOD, GPIO_PIN_14, GPIO_PIN_SET);
-                        while (1) { HAL_Delay(1000); }
-                    }
-                    send_mit(0.0f, 0.0f, 0.0f, 1.0f, 0.0f);
-                    update_motor_position(); // 【關鍵】持續更新 CAN 回傳
-                    HAL_Delay(10);
-                }
-                start_p = motor_actual_p; // 【關鍵】把開機當下的實體位置當作第一個起點
-                is_first_run = 0;
-            }
-
-            // --- 2. 按鈕檢查：若按下藍色按鈕 (PA0)，執行完全停機 ---
-            if (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_0) == GPIO_PIN_SET) {
-                for(int i = 0; i < 3; i++) {
-                    disable_motor();
-                    HAL_Delay(10);
-                }
-                HAL_GPIO_WritePin(GPIOD, GPIO_PIN_13 | GPIO_PIN_15, GPIO_PIN_RESET);
-                HAL_GPIO_WritePin(GPIOD, GPIO_PIN_14, GPIO_PIN_SET);
-                while (1) { HAL_Delay(1000); }
-            }
-
-            // --- 3. 階段 1：勻速旋轉 90 度 ---
-            tick_start = HAL_GetTick();
-            while (1) {
-                if (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_0) == GPIO_PIN_SET) {
-                    disable_motor();
-                    HAL_GPIO_WritePin(GPIOD, GPIO_PIN_14, GPIO_PIN_SET);
-                    while (1) { HAL_Delay(1000); }
-                }
-
-                float elapsed_s = (HAL_GetTick() - tick_start) / 1000.0f;
-                if (elapsed_s >= total_time) break;
-
-                float p_des = start_p + (target_v * elapsed_s);
-                float t_ff  = T_max * sinf(p_des);
-
-                if (send_mit(p_des, target_v, Kp_run, Kd_run, t_ff) != HAL_OK) {
-                    goto ERROR_HANDLER;
-                }
-
-                update_motor_position(); // 【關鍵】旋轉過程持續更新角度解包
-                HAL_GPIO_TogglePin(GPIOD, GPIO_PIN_15); // 藍燈快閃
-                HAL_Delay(10);
-            }
-
-            // --- 4. 階段 2：馬達洩力 5 秒 (可手動轉動) ---
-                        tick_start = HAL_GetTick();
-                        while ((HAL_GetTick() - tick_start) < 5000) {
-                            if (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_0) == GPIO_PIN_SET) {
-                                disable_motor();
-                                HAL_GPIO_WritePin(GPIOD, GPIO_PIN_14, GPIO_PIN_SET);
-                                while (1) { HAL_Delay(1000); }
-                            }
-
-                            // 發送極小阻尼，允許手動旋轉
-                            if (send_mit(0.0f, 0.0f, 0.0f, 0.1f, 0.0f) != HAL_OK) {
-                                goto ERROR_HANDLER;
-                            }
-        }
+User-written code is for personal use only. STMicroelectronics / ARM components under `Drivers/` and `Middlewares/` are licensed under the `LICENSE.txt` in their respective folders.
