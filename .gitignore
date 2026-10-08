@@ -20,3 +20,9 @@ AK60-6 Debug.launch
 # OS
 Thumbs.db
 desktop.ini
+
+.venv/
+venv/
+__pycache__/
+*.pyc
+log/

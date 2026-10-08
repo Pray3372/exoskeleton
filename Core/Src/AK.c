@@ -1,5 +1,6 @@
 #include "AK.h"
 #include <stdint.h>
+#include "log_config.h"
 
 // --- 馬達控制的極限參數 ---
 const float P_MIN = -12.56f;
@@ -47,6 +48,7 @@ uint8_t SERVO_Can_Send_Msg(uint32_t ExtId, uint8_t* msg, uint8_t len)
     if (HAL_CAN_AddTxMessage(&hcan1, &TxHeader, msg, &TxMailbox) != HAL_OK) {
         return 1;
     }
+    LOG_MarkTx();   /* 時序量測用：記下送出時間（MODE 2 時為空巨集） */
     return 0;
 }
 

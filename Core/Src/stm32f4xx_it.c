@@ -228,5 +228,13 @@ void OTG_FS_IRQHandler(void)
 }
 
 /* USER CODE BEGIN 1 */
+/**
+  * @brief CAN1 RX0 中斷 (can_logger 使用；.ioc 未勾選 NVIC，由 CANLOG_Init 手動啟用)
+  */
+extern CAN_HandleTypeDef hcan1;
+void CAN1_RX0_IRQHandler(void)
+{
+  HAL_CAN_IRQHandler(&hcan1);
+}
 
 /* USER CODE END 1 */

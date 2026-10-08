@@ -24,6 +24,7 @@
 /* USER CODE BEGIN Includes */
 #include "AK.h"
 #include "disable_key.h"                       // 檔頭
+#include "log_config.h"                        // MOTOR_LOG_MODE 1=時序量測 / 2=電流紀錄
 
 /* USER CODE END Includes */
 
@@ -139,6 +140,8 @@ int main(void)
     if (HAL_CAN_Start(&hcan1) != HAL_OK) {
         Error_Handler();
     }
+    /* 量測程式（見 log_config.h 的 MOTOR_LOG_MODE）。必須在 DisableKey_Init 之前（可能重新初始化 USART2）。 */
+    LOG_Init(&hcan1, &huart2);
     DisableKey_Init(&huart2);
 
   /* USER CODE END 2 */
@@ -147,6 +150,7 @@ int main(void)
   /* USER CODE BEGIN WHILE */
     while (1)
     {
+        LOG_Process();      /* 時序摘要 或 電流 CSV → UART */
 
 //    	if (!DisableKey_IsDisabled())
 //    	{
@@ -163,17 +167,17 @@ int main(void)
 
             if (phase == 0){
                 pack_cmd(1, 0.0f, -12.0f, 0.0f, 0.2f, 0.0f);
-                HAL_Delay(10);
+                HAL_Delay(4);
 
             }
             else{
             	pack_cmd(1, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f);    // 零力矩，馬達可自由轉動
-            	HAL_Delay(10);
-                break;
+            	HAL_Delay(4);
+//                break;
                 //pack_cmd(1,  0.5f, 0.0f, 10.0f, 3.5f, 0.0f);
             }
 
-            HAL_Delay(10);
+//            HAL_Delay(10);
         }
 
         MX_USB_HOST_Process();
